@@ -12,7 +12,7 @@ M = 32         # v方向のgrid数(半分)
 Vmax = 6.0     # vの打ち切り速度
 dt = 0.01       # time step (ω_pe^{-1} units)
 tmax = 30.0    # end time (enough to see at least one recurrence
-save_root = "../vlasov_random_data4"
+save_root = "../vlasov_random_data"
 Nmodes = 5
 T0=1.0
 
