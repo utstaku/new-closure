@@ -12,7 +12,7 @@ M = 32         # v方向のgrid数(半分)
 Vmax = 6.0     # vの打ち切り速度
 dt = 0.01       # time step (ω_pe^{-1} units)
 tmax = 30.0    # end time (enough to see at least one recurrence
-save_root = "vlasov_random_data4"
+save_root = "../vlasov_random_data4"
 Nmodes = 5
 T0=1.0
 
@@ -101,19 +101,29 @@ def dn_dx(n):
     return dn_dx
 
 #速度uの計算
-def velocity(f):
+def velocity(f,n):
     j1=np.sum(f*v[None, :], axis=1) * dv
-    return j1/density(f)
+    return j1/n
+
+def du_dx(u):
+    u_hat = np.fft.fft(u)
+    du_dx = np.fft.ifft(1j * k_vec * u_hat).real
+    return du_dx
 
 #圧力pの計算
-def pressure(f):
-    vc = v[None, :] - velocity(f)[:, None]
+def pressure(f,n):
+    vc = v[None, :] - velocity(f,n)[:, None]
     p = np.sum(f * (vc**2), axis=1)*dv
     return p
 
+def dp_dx(p):
+    p_hat = np.fft.fft(p)
+    dp_dx = np.fft.ifft(1j * k_vec * p_hat).real
+    return dp_dx
+
 #熱流速勾配の計算
-def dq_dx(f):
-    vc = v[None, :] - velocity(f)[:, None]
+def dq_dx(f,u):
+    vc = v[None, :] - u[:, None]
     q = np.sum(f * (vc**3), axis=1)*dv
     q_hat = np.fft.fft(q)
     dq_dx = np.fft.ifft(1j * k_vec *q_hat).real
@@ -125,8 +135,8 @@ def run_vlasov_case(seed, save_dir, Nmodes, k0, Amax, T0):
     save_dir → 保存フォルダ (例: "raw_data/vlasov_multi/data_0001")
     """
 
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    
+    os.makedirs(save_dir, exist_ok=True)
 
     # --------- 初期密度（Wei et al.方式） ----------
     ne0, ni0, A_list, phi_list, k_list = generate_initial_density(
@@ -149,14 +159,20 @@ def run_vlasov_case(seed, save_dir, Nmodes, k0, Amax, T0):
     u_list = []
     p_list = []
     dqdx_list = []
+    dndx_list = []
+    dudx_list = []
+    dpdx_list = []
 
     t = 0.0
     while t < tmax:
         # モーメントを計算（あなたの関数に差し替え）
         n = density(f)
-        u = velocity(f)
-        p = pressure(f)
-        dqdx = dq_dx(f)
+        u = velocity(f,n)
+        p = pressure(f,n)
+        dqdx = dq_dx(f,u)
+        dndx = dn_dx(n)
+        dudx = du_dx(u)
+        dpdx = dp_dx(p)
 
         # 保存
         t_list.append(t)
@@ -164,6 +180,9 @@ def run_vlasov_case(seed, save_dir, Nmodes, k0, Amax, T0):
         u_list.append(u)
         p_list.append(p)
         dqdx_list.append(dqdx)
+        dndx_list.append(dndx)
+        dudx_list.append(dudx)
+        dpdx_list.append(dpdx)
 
         # 時間ステップ進める（あなたのコードのステップ関数に置き換え）
         #xを半分
@@ -187,7 +206,10 @@ def run_vlasov_case(seed, save_dir, Nmodes, k0, Amax, T0):
         n=np.array(n_list),
         u=np.array(u_list),
         p=np.array(p_list),
-        dq_dx=np.array(dqdx_list)
+        dq_dx=np.array(dqdx_list),
+        dn_dx=np.array(dndx_list),
+        du_dx=np.array(dudx_list),
+        dp_dx=np.array(dpdx_list)
     )
 
     # 初期条件も保存（再現用）
