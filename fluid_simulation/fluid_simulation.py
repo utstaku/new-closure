@@ -5,7 +5,7 @@ import os
 from neuralop.models import FNO
 
 # Parameters
-k = 0.3
+k = 0.35
 A = 0.1
 n0 = 1.0
 T0 = 1.0
@@ -15,7 +15,7 @@ qe = -1.0
 eps0 = 1.0
 omega_pe = 1.0
 dt = 2e-3
-tmax = 80.0
+tmax = 40.0
 ts = []#時間リスト
 Eenergy = []#電場エネルギー
 n_history = []#密度の時間変化
@@ -181,28 +181,5 @@ np.savez(
     Energy=Energy_history,  # 正規化前のエネルギー
 )
 
-"""
-# Plot
-
-def spacetime_plot(data, title, fname):
-    plt.figure(figsize=(8,6))
-    plt.imshow(np.array(data).T, aspect='auto', origin='lower', extent=[0, tmax, 0, L_x])
-    plt.xlabel('t'); plt.ylabel('x'); plt.title(title)
-    plt.colorbar(); plt.tight_layout()
-    plt.savefig(fname, dpi=150)
-    plt.close()
-
-spacetime_plot(n_history, 'density', 'picture/ml_closure_A=0.105/n.png')
-spacetime_plot(u_history, 'velocity', 'picture/ml_closure_A=0.105/u.png')
-spacetime_plot(p_history, 'pressure', 'picture/ml_closure_A=0.105/p.png')
-spacetime_plot(dqdx_history, '∂q/∂x', 'picture/ml_closure_A=0.105/dqdx.png')
-spacetime_plot(Ex_history, 'electric field', 'picture/ml_closure_A=0.105/Ex.png')
-plt.figure()
-plt.plot(ts, Eenergy)
-plt.xlabel('t')
-plt.ylabel('Eenergy')
-plt.yscale('log')
-plt.grid(True)
-plt.savefig('picture/ml_closure_A=0.105/Eenergy.png', dpi=150)
-plt.close()
-"""
+print("Saved results to:", outdir)
+print(len(t_history))
