@@ -5,7 +5,7 @@ import os
 from neuralop.models import FNO
 
 # Parameters
-k = 0.35
+k = 0.3
 A = 0.1
 n0 = 1.0
 T0 = 1.0
@@ -50,15 +50,16 @@ def d_dx(f):
 #MLclosure
 num_modes = 16 # フーリエ空間で使用するモードの数
 num_channels = 64 # インプットとアウトプットの間の層の数
-device = 'cpu'
-ckpt = torch.load('machine_learning/learnedmodel_from_vlasov_colab_ep90.pth', map_location=device, weights_only=False)
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+#device = 'cuda' --- IGNORE ---
+ckpt = torch.load('../FNO/FNOmodel_from_vlasov_random.pth', map_location=device, weights_only=False)
 model = FNO(
-    n_modes=(num_modes,), n_layers=4,hidden_channels=num_channels, in_channels= 3, out_channels=1
+    n_modes=(num_modes,), n_layers=4,hidden_channels=num_channels, in_channels= 6, out_channels=1, max_n_modes=(N_x,),
 ).to(device)
 model.load_state_dict(ckpt)
 model.eval()
 
-sc = np.load("machine_learning/scaler_ep90.npz")
+sc = np.load("../FNO/scaler_random.npz")
 mu_n,  sig_n  = sc["mu_n"],  sc["sig_n"]
 mu_u,  sig_u  = sc["mu_u"],  sc["sig_u"]
 mu_p,  sig_p  = sc["mu_p"],  sc["sig_p"]
@@ -136,7 +137,7 @@ while t < tmax:
     n_history.append(n)
     u_history.append(u)
     p_history.append(p)
-    dqdx_history.append(predict_dqdx(n,u,p))
+    dqdx_history.append(predict_dqdx(n,u,p,d_dx(n),d_dx(u),d_dx(p)))
     Ex_history.append(Ex)
     
     n,u,p,Ex = rk4_step(n,u,p,Ex,dt)
@@ -144,12 +145,12 @@ while t < tmax:
     step +=1
     #print(np.max(predict_dqdx(n,u,p)), np.min(predict_dqdx(n,u,p)))
     #print(Eenergy)
-    if step % 1000 == 0:  # 100ステップごとくらいに
+    if step % 100 == 0:  # 100ステップごとくらいに
         print(f"t={t:.3f}",
               " n[min,max]=", np.min(n), np.max(n),
               " u[max]=", np.max(np.abs(u)),
               " p[max]=", np.max(np.abs(p)),
-              " dqdx[max]=", np.max(np.abs(predict_dqdx(n,u,p))))
+              " dqdx[max]=", np.max(np.abs(predict_dqdx(n,u,p,d_dx(n),d_dx(u),d_dx(p)))))
 
 
 Eenergy = np.array(Eenergy)/Eenergy[0]
@@ -165,7 +166,7 @@ Energy_history = np.array(Energy_history)   # (Nt,)
 
 
 # 保存用ディレクトリ（図と同じフォルダ）
-outdir = "raw_data/ml_closure_A=0.1_t80"
+outdir = f"fluid_simulation_results/ml_closure_A={A}_k={k}/"
 os.makedirs(outdir, exist_ok=True)
 
 # まとめて .npz で保存（バイナリ。後で Python から読みやすい）
