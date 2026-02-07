@@ -255,7 +255,7 @@ def train(
         else:
             print(f"[ep {ep:03d}] train {tr_loss:.6e}")
 
-    os.makedirs("checkpoints", exist_ok=True)
+    # save model
     ckpt = {
         "model": model.state_dict(),
         "stats": stats,
@@ -270,18 +270,18 @@ def train(
             "fno_layers": fno_layers,
         },
     }
-    torch.save(ckpt, "checkpoints/closure_neuralop_fno.pth")
-    print("saved: checkpoints/closure_neuralop_fno.pth")
+    torch.save(ckpt, "simpleencode_closure_neuralop_fno.pth")
+    print("saved: simpleencode_closure_neuralop_fno.pth")
 
 
 if __name__ == "__main__":
     train(
-        npz_train="raw_data/vlasov_A=0.1/moments_train.npz",
-        npz_valid="raw_data/vlasov_A=0.1/moments_test.npz",
+        npz_train="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
+        npz_valid="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
         L=32,
         batch_size=16,
         lr=2e-3,
-        epochs=30,
+        epochs=10,
         fno_modes=16,
         fno_hidden=64,
         fno_layers=4,
