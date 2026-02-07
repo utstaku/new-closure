@@ -15,7 +15,7 @@ dt = 2e-3       # time step (ω_pe^{-1} units) training:5e-3, test:2e-3
 tmax = 40.0    # end time (enough to see at least one recurrence)
 
 # 保存用ディレクトリ（図と同じフォルダ）
-outdir = "../vlasov_A=0.1"
+outdir = f"../vlasov_single_data/A={A}_k={k}/"
 os.makedirs(outdir, exist_ok=True)
 
 # v方向の分割
@@ -172,7 +172,7 @@ Energy_history = np.array(Energy_history)   # (Nt,)
 
 # まとめて .npz で保存（バイナリ。後で Python から読みやすい）
 np.savez(
-    f"{outdir}/moments_test.npz", #ここをtrainingとtestで変更する必要あり
+    f"{outdir}/moments_dt2e-3.npz", #ここをtrainingとtestで変更する必要あり
     A_data=A * np.ones(len(t_history)),
     t=t_history,
     x=x,
