@@ -62,34 +62,41 @@ sc = np.load("machine_learning/scaler_ep90.npz")
 mu_n,  sig_n  = sc["mu_n"],  sc["sig_n"]
 mu_u,  sig_u  = sc["mu_u"],  sc["sig_u"]
 mu_p,  sig_p  = sc["mu_p"],  sc["sig_p"]
+mu_dn, sig_dn = sc["mu_dn"], sc["sig_dn"]   # ∂n/∂x の教師側スケール（必要なら逆規格化に使用）
+mu_du, sig_du = sc["mu_du"], sc["sig_du"]   # ∂u/∂x の教師側スケール（必要なら逆規格化に使用）
+mu_dp, sig_dp = sc["mu_dp"], sc["sig_dp"]   # ∂p/∂x の教師側スケール（必要なら逆規格化に使用）
 mu_dq, sig_dq = sc["mu_dq"], sc["sig_dq"]   # ∂q/∂x の教師側スケール（必要なら逆規格化に使用）
 print("mu_n =", mu_n, "sig_n =", sig_n)
 print("mu_u =", mu_u, "sig_u =", sig_u)
 print("mu_p =", mu_p, "sig_p =", sig_p)
+print("mu_dn =", mu_dn, "sig_dn =", sig_dn)
+print("mu_du =", mu_du, "sig_du =", sig_du)
+print("mu_dp =", mu_dp, "sig_dp =", sig_dp)
 print("mu_dq =", mu_dq, "sig_dq =", sig_dq)
 
-def normalize_inputs(n,u,p):
+def normalize_inputs(n,u,p,dn_dx, du_dx, dp_dx):
     n_ = (n - mu_n)/sig_n
     u_ = (u - mu_u)/sig_u
     p_ = (p - mu_p)/sig_p
-    return n_, u_, p_
-
+    dn_dx_ = (dn_dx - mu_dn)/sig_dn
+    du_dx_ = (du_dx - mu_du)/sig_du
+    dp_dx_ = (dp_dx - mu_dp)/sig_dp
+    return n_, u_, p_, dn_dx_, du_dx_, dp_dx_
 def denorm_dqdx(dqdx_norm):
     return dqdx_norm*sig_dq + mu_dq
 
 @torch.no_grad()
-def predict_dqdx(n, u, p):
-    """
-    n,u,p : np.ndarray shape [Nx]
-    return : np.ndarray shape [Nx]  (物理スケールの ∂q/∂x)
-    """
-    n_, u_, p_ = normalize_inputs(n,u,p)
-    x = np.stack([n_, u_, p_], axis=0)[None, ...]   # [1,3,Nx]
+def predict_dqdx(n, u, p, dn_dx, du_dx, dp_dx):
+    n_, u_, p_, dn_dx_, du_dx_, dp_dx_ = normalize_inputs(n,u,p,dn_dx,du_dx,dp_dx)
+    x = np.stack([n_, u_, p_, dn_dx_, du_dx_, dp_dx_], axis=0)[None, ...]   # [1,6,Nx]
     x = torch.from_numpy(x.astype(np.float32)).to(device)
     y = model(x)                                    # [1,1,Nx]
     dqdx_norm = y[0,0].detach().cpu().numpy()
     dqdx = denorm_dqdx(dqdx_norm)
-    #dqdx = y[0,0].detach().cpu().numpy()
+    """
+    n,u,p : np.ndarray shape [Nx]
+    return : np.ndarray shape [Nx]  (物理スケールの ∂q/∂x)
+    """
     return dqdx
 
 #右辺の計算
@@ -97,7 +104,7 @@ alpha = 1.0
 def rhs(n,u,p,Ex): 
     dn = -d_dx(n*u) 
     du = -u*d_dx(u) - (1.0/(me*n))*d_dx(p) + (qe/me)*Ex 
-    dp = -u*d_dx(p) - 3.0*p*d_dx(u) -alpha*predict_dqdx(n,u,p)
+    dp = -u*d_dx(p) - 3.0*p*d_dx(u) -alpha*predict_dqdx(n,u,p,d_dx(n),d_dx(u),d_dx(p))
     dEx = -(qe/eps0)*n*u 
     return dn, du, dp, dEx
 
