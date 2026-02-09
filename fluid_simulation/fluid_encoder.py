@@ -20,7 +20,7 @@ me = 1.0
 qe = -1.0
 eps0 = 1.0
 
-dt = 2e-3
+dt = 0.2
 tmax = 30.0
 
 L_x = 2 * np.pi / k
@@ -47,7 +47,7 @@ Ex = (qe * n0 * A / (eps0 * k)) * np.sin(k * x)
 # ============================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-CKPT_PATH = "../temporal_encoder/simpleencode_closure_neuralop_fno.pth"  # <- ここはあなたのckptに合わせて
+CKPT_PATH = "../temporal_encoder/simpleencode_closure_neuralop_fno_dt0.2.pth"  # <- ここはあなたのckptに合わせて
 ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
 
 # ---- instantiate the same model arch used in training ----
@@ -60,7 +60,7 @@ arch = ckpt.get("arch", {})
 # ※あなたの ClosureModel の引数名に合わせて必要なら修正
 model = ClosureModel(
     C_in=3,
-    L=int(ckpt.get("L", 32)),
+    L=int(ckpt.get("L", 64)),
     d_m=int(arch.get("d_m", 16)),
     t_hidden=int(arch.get("t_hidden", 64)),
     t_layers=int(arch.get("t_layers", 2)),
@@ -74,7 +74,7 @@ model.load_state_dict(ckpt["model"], strict=False)
 model.eval()
 
 stats = ckpt["stats"]
-L = int(ckpt.get("L", 32))  # ✅ L=32
+L = int(ckpt.get("L", 64))  # ✅ L=32
 
 # stats: input (C,), output scalar
 mu = np.array(stats["mu"], dtype=np.float32)    # (3,)
@@ -260,7 +260,7 @@ outdir = f"../fluid_simulation_results/windowAE_closure_A={A}_k={k}/"
 os.makedirs(outdir, exist_ok=True)
 
 np.savez(
-    f"{outdir}/moments.npz",
+    f"{outdir}/moments_dt0.2.npz",
     t=t_history,
     x=x,
     n=n_history,
@@ -271,3 +271,12 @@ np.savez(
 )
 
 print("saved:", f"{outdir}/moments.npz")
+
+#energyのプロット
+plt.figure()
+plt.plot(t_history,Energy_history,'r-')
+plt.yscale('log')   
+plt.xlabel('t')
+plt.ylabel('Electric Field Energy')
+plt.title('Fluid + ML (FNO) Energy Evolution')
+plt.show()

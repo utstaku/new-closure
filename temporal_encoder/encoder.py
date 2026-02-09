@@ -270,18 +270,18 @@ def train(
             "fno_layers": fno_layers,
         },
     }
-    torch.save(ckpt, "simpleencode_closure_neuralop_fno.pth")
-    print("saved: simpleencode_closure_neuralop_fno.pth")
+    torch.save(ckpt, "simpleencode_closure_neuralop_fno_dt0.2.pth")
+    print("saved: simpleencode_closure_neuralop_fno_dt0.2.pth")
 
 
 if __name__ == "__main__":
     train(
-        npz_train="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
-        npz_valid="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
-        L=32,
+        npz_train="../vlasov_single_data/A=0.1_k=0.35/moments_dt0.2.npz",
+        npz_valid="../vlasov_single_data/A=0.1_k=0.35/moments_dt0.2.npz",
+        L=64,
         batch_size=16,
         lr=2e-3,
-        epochs=10,
+        epochs=35,
         fno_modes=16,
         fno_hidden=64,
         fno_layers=4,

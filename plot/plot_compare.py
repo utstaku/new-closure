@@ -19,8 +19,8 @@ def spacetime_plot(ax, data, title="", cmap="RdBu_r", vmin=None, vmax=None):
 """
 # ---- データのロード ----
 """
-vlasov_data = np.load('../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz')
-mlc_data    = np.load('../fluid_simulation_results/windowAE_closure_A=0.1_k=0.35/moments.npz')
+vlasov_data = np.load('../vlasov_single_data/A=0.05_k=0.35/moments_dt0.002.npz')
+mlc_data    = np.load('../fluid_simulation_results/windowAE_closure_A=0.05_k=0.35/moments.npz')
 
 t_v = vlasov_data["t"]; n_v, u_v, p_v, dq_v, Eenergy_v = \
     vlasov_data["n"], vlasov_data["u"], vlasov_data["p"], vlasov_data["dq_dx"], vlasov_data["Energy"]
@@ -34,7 +34,7 @@ p_v = p_v[:len(t_m)]
 dq_v = dq_v[:len(t_m)]
 Eenergy_v = Eenergy_v[:len(t_m)]
 
-outdir = '../picture/comparing/A=0.1_k=0.35_simpleAE/'
+outdir = '../picture/comparing/A=0.05_k=0.35_simpleAE/'
 os.makedirs(outdir, exist_ok=True)
 
 plt.figure()
