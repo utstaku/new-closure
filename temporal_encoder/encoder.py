@@ -11,6 +11,7 @@
 # containing keys: t, x, n, u, p, dq_dx
 
 import os
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -127,6 +128,59 @@ class TemporalEncoderTCN(nn.Module):
 
 
 # ============================================================
+# Temporal Encoder: per-x self-attention over time (shared weights across x)
+# Input:  X_seq (B, L, N, C_in)
+# Output: M     (B, N, d_m)
+#
+# Implementation:
+#   (B, L, N, C) -> (B*N, L, C) -> proj -> TransformerEncoder -> attn pool
+# ============================================================
+class TemporalEncoderAttention(nn.Module):
+    def __init__(
+        self,
+        C_in: int = 3,
+        d_m: int = 16,
+        n_heads: int = 4,
+        layers: int = 2,
+        ff_hidden: int = 64,
+        dropout: float = 0.1,
+        max_len: int = 32,
+    ):
+        super().__init__()
+        self.input_proj = nn.Linear(C_in, d_m)
+        self.pos_emb = nn.Parameter(torch.zeros(1, max_len, d_m))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d_m,
+            nhead=n_heads,
+            dim_feedforward=ff_hidden,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers)
+        self.pool = nn.Parameter(torch.randn(1, d_m))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, X_seq: torch.Tensor) -> torch.Tensor:
+        # X_seq: (B, L, N, C)
+        B, L, N, C = X_seq.shape
+        if L > self.pos_emb.shape[1]:
+            raise ValueError(f"Sequence length {L} exceeds max_len {self.pos_emb.shape[1]}")
+        X = X_seq.permute(0, 2, 1, 3).contiguous().view(B * N, L, C)  # (B*N, L, C)
+        H = self.input_proj(X) + self.pos_emb[:, :L, :]
+        H = self.dropout(H)
+        H = self.encoder(H)  # (B*N, L, d_m)
+
+        # attention pooling over time
+        q = self.pool.view(1, 1, -1)  # (1, 1, d_m)
+        scores = torch.sum(H * q, dim=-1) / math.sqrt(H.shape[-1])  # (B*N, L)
+        weights = torch.softmax(scores, dim=-1)
+        M = torch.sum(H * weights.unsqueeze(-1), dim=1)  # (B*N, d_m)
+        return M.view(B, N, -1)  # (B, N, d_m)
+
+
+# ============================================================
 # Spatial Nonlocal Mapper: neuralop FNO
 # Input:  M (B, N, d_m)
 # Output: y_hat (B, N)
@@ -140,9 +194,12 @@ class ClosureModel(nn.Module):
         L: int = 32,
         d_m: int = 16,
         # temporal encoder
+        temporal_encoder: str = "attn",  # "attn" | "tcn"
         t_hidden: int = 64,
         t_layers: int = 2,
         t_kernel: int = 5,
+        attn_heads: int = 4,
+        attn_dropout: float = 0.1,
         # FNO
         fno_modes: int = 16,
         fno_hidden: int = 64,
@@ -151,7 +208,20 @@ class ClosureModel(nn.Module):
     ):
         super().__init__()
         self.L = L
-        self.temporal = TemporalEncoderTCN(C_in=C_in, d_m=d_m, hidden=t_hidden, layers=t_layers, kernel=t_kernel)
+        if temporal_encoder == "tcn":
+            self.temporal = TemporalEncoderTCN(C_in=C_in, d_m=d_m, hidden=t_hidden, layers=t_layers, kernel=t_kernel)
+        elif temporal_encoder == "attn":
+            self.temporal = TemporalEncoderAttention(
+                C_in=C_in,
+                d_m=d_m,
+                n_heads=attn_heads,
+                layers=t_layers,
+                ff_hidden=t_hidden,
+                dropout=attn_dropout,
+                max_len=L,
+            )
+        else:
+            raise ValueError(f"Unknown temporal_encoder: {temporal_encoder}")
 
         # neuralop FNO: N-dimensional; for 1D use n_modes=(modes,)
         self.fno = FNO(
@@ -185,10 +255,13 @@ def train(
     fno_hidden: int = 64,
     fno_layers: int = 4,
     # temporal params
+    temporal_encoder: str = "attn",
     d_m: int = 16,
     t_hidden: int = 64,
     t_layers: int = 2,
     t_kernel: int = 5,
+    attn_heads: int = 4,
+    attn_dropout: float = 0.1,
     device: str | None = None,
 ):
     if device is None:
@@ -209,9 +282,12 @@ def train(
         C_in=3,
         L=L,
         d_m=d_m,
+        temporal_encoder=temporal_encoder,
         t_hidden=t_hidden,
         t_layers=t_layers,
         t_kernel=t_kernel,
+        attn_heads=attn_heads,
+        attn_dropout=attn_dropout,
         fno_modes=fno_modes,
         fno_hidden=fno_hidden,
         fno_layers=fno_layers,
@@ -262,9 +338,12 @@ def train(
         "L": L,
         "arch": {
             "d_m": d_m,
+            "temporal_encoder": temporal_encoder,
             "t_hidden": t_hidden,
             "t_layers": t_layers,
             "t_kernel": t_kernel,
+            "attn_heads": attn_heads,
+            "attn_dropout": attn_dropout,
             "fno_modes": fno_modes,
             "fno_hidden": fno_hidden,
             "fno_layers": fno_layers,
@@ -285,8 +364,11 @@ if __name__ == "__main__":
         fno_modes=16,
         fno_hidden=64,
         fno_layers=4,
+        temporal_encoder="attn",
         d_m=16,
         t_hidden=64,
         t_layers=2,
         t_kernel=5,
+        attn_heads=4,
+        attn_dropout=0.1,
     )
