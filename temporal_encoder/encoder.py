@@ -11,6 +11,7 @@
 # containing keys: t, x, n, u, p, dq_dx
 
 import os
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -127,6 +128,87 @@ class TemporalEncoderTCN(nn.Module):
 
 
 # ============================================================
+# Temporal Encoder: per-x self-attention over time (shared weights across x)
+# Input:  X_seq (B, L, N, C_in)
+# Output: M     (B, N, d_m)
+#
+# Implementation:
+#   (B, L, N, C) -> (B*N, L, C) -> proj -> TransformerEncoder -> attn pool
+# ============================================================
+class TemporalEncoderAttention(nn.Module):
+    def __init__(
+        self,
+        C_in: int = 3,
+        d_m: int = 16,
+        n_heads: int = 4,
+        layers: int = 2,
+        ff_hidden: int = 64,
+        dropout: float = 0.1,
+        max_len: int = 32,
+    ):
+        super().__init__()
+        self.input_proj = nn.Linear(C_in, d_m)
+        self.pos_emb = nn.Parameter(torch.zeros(1, max_len, d_m))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d_m,
+            nhead=n_heads,
+            dim_feedforward=ff_hidden,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers)
+        self.pool = nn.Parameter(torch.randn(1, d_m))
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, X_seq: torch.Tensor) -> torch.Tensor:
+        # X_seq: (B, L, N, C)
+        B, L, N, C = X_seq.shape
+        if L > self.pos_emb.shape[1]:
+            raise ValueError(f"Sequence length {L} exceeds max_len {self.pos_emb.shape[1]}")
+        X = X_seq.permute(0, 2, 1, 3).contiguous().view(B * N, L, C)  # (B*N, L, C)
+        H = self.input_proj(X) + self.pos_emb[:, :L, :]
+        H = self.dropout(H)
+        H = self.encoder(H)  # (B*N, L, d_m)
+
+        # attention pooling over time
+        q = self.pool.view(1, 1, -1)  # (1, 1, d_m)
+        scores = torch.sum(H * q, dim=-1) / math.sqrt(H.shape[-1])  # (B*N, L)
+        weights = torch.softmax(scores, dim=-1)
+        M = torch.sum(H * weights.unsqueeze(-1), dim=1)  # (B*N, d_m)
+        return M.view(B, N, -1)  # (B, N, d_m)
+
+
+# ============================================================
+# Temporal Decoder: per-x latent -> time history reconstruction
+# Input:  M      (B, N, d_m)
+# Output: X_rec  (B, L, N, C_in)
+# ============================================================
+class TemporalDecoderMLP(nn.Module):
+    def __init__(self, d_m: int = 16, L: int = 32, C_out: int = 3, hidden: int = 128, layers: int = 2):
+        super().__init__()
+        if layers < 1:
+            raise ValueError("layers must be >= 1")
+        mods: list[nn.Module] = []
+        c = d_m
+        for _ in range(max(0, layers - 1)):
+            mods += [nn.Linear(c, hidden), nn.GELU()]
+            c = hidden
+        mods += [nn.Linear(c, L * C_out)]
+        self.net = nn.Sequential(*mods)
+        self.L = L
+        self.C_out = C_out
+
+    def forward(self, M: torch.Tensor) -> torch.Tensor:
+        # M: (B, N, d_m)
+        B, N, d_m = M.shape
+        X = self.net(M.view(B * N, d_m))               # (B*N, L*C_out)
+        X = X.view(B, N, self.L, self.C_out)           # (B, N, L, C_out)
+        return X.permute(0, 2, 1, 3).contiguous()      # (B, L, N, C_out)
+
+
+# ============================================================
 # Spatial Nonlocal Mapper: neuralop FNO
 # Input:  M (B, N, d_m)
 # Output: y_hat (B, N)
@@ -140,9 +222,16 @@ class ClosureModel(nn.Module):
         L: int = 32,
         d_m: int = 16,
         # temporal encoder
+        temporal_encoder: str = "attn",  # "attn" | "tcn"
         t_hidden: int = 64,
         t_layers: int = 2,
         t_kernel: int = 5,
+        attn_heads: int = 4,
+        attn_dropout: float = 0.1,
+        # decoder (aux reconstruction)
+        use_decoder: bool = True,
+        dec_hidden: int = 128,
+        dec_layers: int = 2,
         # FNO
         fno_modes: int = 16,
         fno_hidden: int = 64,
@@ -151,7 +240,30 @@ class ClosureModel(nn.Module):
     ):
         super().__init__()
         self.L = L
-        self.temporal = TemporalEncoderTCN(C_in=C_in, d_m=d_m, hidden=t_hidden, layers=t_layers, kernel=t_kernel)
+        if temporal_encoder == "tcn":
+            self.temporal = TemporalEncoderTCN(C_in=C_in, d_m=d_m, hidden=t_hidden, layers=t_layers, kernel=t_kernel)
+        elif temporal_encoder == "attn":
+            self.temporal = TemporalEncoderAttention(
+                C_in=C_in,
+                d_m=d_m,
+                n_heads=attn_heads,
+                layers=t_layers,
+                ff_hidden=t_hidden,
+                dropout=attn_dropout,
+                max_len=L,
+            )
+        else:
+            raise ValueError(f"Unknown temporal_encoder: {temporal_encoder}")
+
+        self.use_decoder = bool(use_decoder)
+        if self.use_decoder:
+            self.decoder = TemporalDecoderMLP(
+                d_m=d_m,
+                L=L,
+                C_out=C_in,
+                hidden=dec_hidden,
+                layers=dec_layers,
+            )
 
         # neuralop FNO: N-dimensional; for 1D use n_modes=(modes,)
         self.fno = FNO(
@@ -162,12 +274,18 @@ class ClosureModel(nn.Module):
             n_layers=fno_layers,
         )
 
-    def forward(self, X_seq: torch.Tensor) -> torch.Tensor:
+    def forward(self, X_seq: torch.Tensor, return_recon: bool = False):
         # X_seq: (B, L, N, C_in)
         M = self.temporal(X_seq)         # (B, N, d_m)
-        M = M.permute(0, 2, 1)           # (B, d_m, N)  -> for FNO
-        y = self.fno(M)                  # (B, 1, N)
-        return y.squeeze(1)              # (B, N)
+        M_fno = M.permute(0, 2, 1)       # (B, d_m, N)  -> for FNO
+        y = self.fno(M_fno).squeeze(1)   # (B, N)
+
+        if return_recon:
+            if not self.use_decoder:
+                raise ValueError("return_recon=True but decoder is disabled (use_decoder=False)")
+            X_rec = self.decoder(M)       # (B, L, N, C_in)
+            return y, X_rec
+        return y
 
 
 # ============================================================
@@ -185,10 +303,18 @@ def train(
     fno_hidden: int = 64,
     fno_layers: int = 4,
     # temporal params
+    temporal_encoder: str = "attn",
     d_m: int = 16,
     t_hidden: int = 64,
     t_layers: int = 2,
     t_kernel: int = 5,
+    attn_heads: int = 4,
+    attn_dropout: float = 0.1,
+    # reconstruction loss
+    use_decoder: bool = True,
+    recon_weight: float = 0.1,
+    dec_hidden: int = 128,
+    dec_layers: int = 2,
     device: str | None = None,
 ):
     if device is None:
@@ -209,9 +335,15 @@ def train(
         C_in=3,
         L=L,
         d_m=d_m,
+        temporal_encoder=temporal_encoder,
         t_hidden=t_hidden,
         t_layers=t_layers,
         t_kernel=t_kernel,
+        attn_heads=attn_heads,
+        attn_dropout=attn_dropout,
+        use_decoder=use_decoder,
+        dec_hidden=dec_hidden,
+        dec_layers=dec_layers,
         fno_modes=fno_modes,
         fno_hidden=fno_hidden,
         fno_layers=fno_layers,
@@ -219,18 +351,29 @@ def train(
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    loss_fn = nn.MSELoss()
+    pred_loss_fn = nn.MSELoss()
+    recon_loss_fn = nn.MSELoss()
 
     for ep in range(1, epochs + 1):
         model.train()
         tr_loss = 0.0
+        tr_pred = 0.0
+        tr_recon = 0.0
 
         for X_seq, y in dl_train:
             X_seq = X_seq.to(device)  # (B, L, N, C)
             y = y.to(device)          # (B, N)
 
-            y_hat = model(X_seq)      # (B, N)
-            loss = loss_fn(y_hat, y)
+            if use_decoder:
+                y_hat, X_rec = model(X_seq, return_recon=True)
+                pred_loss = pred_loss_fn(y_hat, y)
+                recon_loss = recon_loss_fn(X_rec, X_seq)
+                loss = pred_loss + recon_weight * recon_loss
+                tr_recon += float(recon_loss.item())
+            else:
+                y_hat = model(X_seq)
+                pred_loss = pred_loss_fn(y_hat, y)
+                loss = pred_loss
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -238,22 +381,50 @@ def train(
             opt.step()
 
             tr_loss += float(loss.item())
+            tr_pred += float(pred_loss.item())
 
         tr_loss /= max(1, len(dl_train))
+        tr_pred /= max(1, len(dl_train))
+        if use_decoder:
+            tr_recon /= max(1, len(dl_train))
 
         if dl_valid is not None:
             model.eval()
             va_loss = 0.0
+            va_pred = 0.0
+            va_recon = 0.0
             with torch.no_grad():
                 for X_seq, y in dl_valid:
                     X_seq = X_seq.to(device)
                     y = y.to(device)
-                    y_hat = model(X_seq)
-                    va_loss += float(loss_fn(y_hat, y).item())
+                    if use_decoder:
+                        y_hat, X_rec = model(X_seq, return_recon=True)
+                        pred_loss = pred_loss_fn(y_hat, y)
+                        recon_loss = recon_loss_fn(X_rec, X_seq)
+                        loss = pred_loss + recon_weight * recon_loss
+                        va_recon += float(recon_loss.item())
+                    else:
+                        y_hat = model(X_seq)
+                        pred_loss = pred_loss_fn(y_hat, y)
+                        loss = pred_loss
+                    va_loss += float(loss.item())
+                    va_pred += float(pred_loss.item())
             va_loss /= max(1, len(dl_valid))
-            print(f"[ep {ep:03d}] train {tr_loss:.6e} | valid {va_loss:.6e}")
+            va_pred /= max(1, len(dl_valid))
+            if use_decoder:
+                va_recon /= max(1, len(dl_valid))
+                print(
+                    f"[ep {ep:03d}] "
+                    f"train total {tr_loss:.6e} pred {tr_pred:.6e} recon {tr_recon:.6e} | "
+                    f"valid total {va_loss:.6e} pred {va_pred:.6e} recon {va_recon:.6e}"
+                )
+            else:
+                print(f"[ep {ep:03d}] train {tr_loss:.6e} | valid {va_loss:.6e}")
         else:
-            print(f"[ep {ep:03d}] train {tr_loss:.6e}")
+            if use_decoder:
+                print(f"[ep {ep:03d}] train total {tr_loss:.6e} pred {tr_pred:.6e} recon {tr_recon:.6e}")
+            else:
+                print(f"[ep {ep:03d}] train {tr_loss:.6e}")
 
     # save model
     ckpt = {
@@ -262,9 +433,16 @@ def train(
         "L": L,
         "arch": {
             "d_m": d_m,
+            "temporal_encoder": temporal_encoder,
             "t_hidden": t_hidden,
             "t_layers": t_layers,
             "t_kernel": t_kernel,
+            "attn_heads": attn_heads,
+            "attn_dropout": attn_dropout,
+            "use_decoder": use_decoder,
+            "recon_weight": recon_weight,
+            "dec_hidden": dec_hidden,
+            "dec_layers": dec_layers,
             "fno_modes": fno_modes,
             "fno_hidden": fno_hidden,
             "fno_layers": fno_layers,
@@ -285,8 +463,15 @@ if __name__ == "__main__":
         fno_modes=16,
         fno_hidden=64,
         fno_layers=4,
+        temporal_encoder="attn",
         d_m=16,
         t_hidden=64,
         t_layers=2,
         t_kernel=5,
+        attn_heads=4,
+        attn_dropout=0.1,
+        use_decoder=True,
+        recon_weight=0.1,
+        dec_hidden=128,
+        dec_layers=2,
     )
