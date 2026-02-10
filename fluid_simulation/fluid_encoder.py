@@ -43,6 +43,36 @@ p = n * T0
 Ex = (qe * n0 * A / (eps0 * k)) * np.sin(k * x)
 
 # ============================================================
+# Optional: Vlasov truth for warm-start history (n,u,p only)
+# ============================================================
+USE_VLASOV_HISTORY = True
+VLA_PATH = "../vlasov_single_data/A=0.1_k=0.35/moments.npz"
+
+vlasov_frames = None  # (Nt, N, 3)
+vlasov_t = None
+
+if USE_VLASOV_HISTORY:
+    if os.path.exists(VLA_PATH):
+        vdata = np.load(VLA_PATH)
+        if all(k in vdata for k in ("n", "u", "p")):
+            n_v = vdata["n"].astype(np.float32)
+            u_v = vdata["u"].astype(np.float32)
+            p_v = vdata["p"].astype(np.float32)
+            if n_v.shape == u_v.shape == p_v.shape:
+                vlasov_frames = np.stack([n_v, u_v, p_v], axis=-1)  # (Nt, N, 3)
+                if "t" in vdata:
+                    vlasov_t = vdata["t"].astype(np.float32)
+                if vlasov_frames.shape[1] != N_x:
+                    print("[warn] Vlasov Nx mismatch; disable warm-start.")
+                    vlasov_frames = None
+            else:
+                print("[warn] Vlasov n/u/p shape mismatch; disable warm-start.")
+        else:
+            print("[warn] Vlasov data missing n/u/p; disable warm-start.")
+    else:
+        print(f"[warn] Vlasov data not found: {VLA_PATH}")
+
+# ============================================================
 # Load trained window model (L=32, inchannel=3)
 # ============================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -114,6 +144,32 @@ def make_window_from_list(frames_list, L, fallback_frame):
     pad = np.repeat(first, pad_len, axis=0)
     return np.concatenate([pad, np.stack(frames_list, axis=0)], axis=0)
 
+def _vlasov_index(t_now, v_t, dt, Nt):
+    if v_t is None:
+        idx = int(np.floor(t_now / dt + 1e-9))
+    else:
+        idx = int(np.searchsorted(v_t, t_now, side="right") - 1)
+    return int(np.clip(idx, 0, Nt - 1))
+
+def make_window_with_vlasov(t_now, frame_now, L, vlasov_frames, vlasov_t=None):
+    """
+    Use Vlasov truth for history part of the window when steps < L.
+    The last frame is always the current (simulated) state.
+    """
+    Nt = vlasov_frames.shape[0]
+    idx = _vlasov_index(t_now, vlasov_t, dt, Nt)
+
+    # history indices: [idx-(L-1), ..., idx-1]
+    hist_start = max(0, idx - (L - 1))
+    hist = vlasov_frames[hist_start:idx]  # exclude current time
+
+    pad_len = (L - 1) - hist.shape[0]
+    if pad_len > 0:
+        pad = np.repeat(vlasov_frames[0:1], pad_len, axis=0)
+        hist = np.concatenate([pad, hist], axis=0)
+
+    return np.concatenate([hist, frame_now[None, ...]], axis=0)
+
 @torch.no_grad()
 def predict_dqdx_from_window(X_seq_raw):
     """
@@ -133,13 +189,17 @@ def predict_dqdx_from_window(X_seq_raw):
     dqdx = denorm_dqdx(dqdx_norm).astype(np.float32)
     return dqdx
 
-def predict_dqdx_stage(n_s, u_s, p_s, hist_deque):
+def predict_dqdx_stage(n_s, u_s, p_s, hist_deque, t_stage):
     """
     RK stages用：履歴dequeは更新せず、仮の状態(n_s,u_s,p_s)を末尾に付けた窓で予測する
     """
     frame_s = make_frame(n_s, u_s, p_s)
-    frames = list(hist_deque) + [frame_s]     # “今”を入れる
-    X_seq_raw = make_window_from_list(frames, L=L, fallback_frame=frame_s)
+    if vlasov_frames is not None and len(hist_deque) < L:
+        # 早い時刻は Vlasov の真値で履歴を埋める
+        X_seq_raw = make_window_with_vlasov(t_stage, frame_s, L=L, vlasov_frames=vlasov_frames, vlasov_t=vlasov_t)
+    else:
+        frames = list(hist_deque) + [frame_s]     # “今”を入れる
+        X_seq_raw = make_window_from_list(frames, L=L, fallback_frame=frame_s)
     return predict_dqdx_from_window(X_seq_raw)
 
 # ============================================================
@@ -154,7 +214,7 @@ def rhs_with_dqdx(n, u, p, Ex, dqdx):
     dEx = -(qe / eps0) * n * u
     return dn, du, dp, dEx
 
-def rk4_step_window(n, u, p, Ex, dt, hist_deque):
+def rk4_step_window(n, u, p, Ex, dt, hist_deque, t):
     """
     重要：
     - 履歴dequeはこの関数内では「仮に使うだけ」
@@ -162,7 +222,7 @@ def rk4_step_window(n, u, p, Ex, dt, hist_deque):
     - RK4の各ステージは “hist + provisional_state” でdqdxを計算
     """
     # k1
-    dq1 = predict_dqdx_stage(n, u, p, hist_deque)
+    dq1 = predict_dqdx_stage(n, u, p, hist_deque, t)
     k1 = rhs_with_dqdx(n, u, p, Ex, dq1)
 
     # k2
@@ -170,7 +230,7 @@ def rk4_step_window(n, u, p, Ex, dt, hist_deque):
     u2  = u  + 0.5 * dt * k1[1]
     p2  = p  + 0.5 * dt * k1[2]
     Ex2 = Ex + 0.5 * dt * k1[3]
-    dq2 = predict_dqdx_stage(n2, u2, p2, hist_deque)
+    dq2 = predict_dqdx_stage(n2, u2, p2, hist_deque, t + 0.5 * dt)
     k2 = rhs_with_dqdx(n2, u2, p2, Ex2, dq2)
 
     # k3
@@ -178,7 +238,7 @@ def rk4_step_window(n, u, p, Ex, dt, hist_deque):
     u3  = u  + 0.5 * dt * k2[1]
     p3  = p  + 0.5 * dt * k2[2]
     Ex3 = Ex + 0.5 * dt * k2[3]
-    dq3 = predict_dqdx_stage(n3, u3, p3, hist_deque)
+    dq3 = predict_dqdx_stage(n3, u3, p3, hist_deque, t + 0.5 * dt)
     k3 = rhs_with_dqdx(n3, u3, p3, Ex3, dq3)
 
     # k4
@@ -186,7 +246,7 @@ def rk4_step_window(n, u, p, Ex, dt, hist_deque):
     u4  = u  + dt * k3[1]
     p4  = p  + dt * k3[2]
     Ex4 = Ex + dt * k3[3]
-    dq4 = predict_dqdx_stage(n4, u4, p4, hist_deque)
+    dq4 = predict_dqdx_stage(n4, u4, p4, hist_deque, t + dt)
     k4 = rhs_with_dqdx(n4, u4, p4, Ex4, dq4)
 
     n_new  = n  + (dt / 6.0) * (k1[0] + 2*k2[0] + 2*k3[0] + k4[0])
@@ -228,7 +288,7 @@ while t < tmax:
     p_history.append(p.copy())
     Ex_history.append(Ex.copy())
 
-    n, u, p, Ex, dqdx_cur = rk4_step_window(n, u, p, Ex, dt, hist)
+    n, u, p, Ex, dqdx_cur = rk4_step_window(n, u, p, Ex, dt, hist, t)
     dqdx_history.append(dqdx_cur.copy())
 
     t += dt
