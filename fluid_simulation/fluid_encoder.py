@@ -4,7 +4,7 @@ import torch
 import os
 from collections import deque
 
-# ✅ あなたの学習済みモデル
+# ✅ 学習済みモデル
 import sys
 sys.path.append("..")  # <- ここはあなたの環境に合わせてOK
 from temporal_encoder.encoder import ClosureModel  # <- ここはあなたの環境に合わせてOK
@@ -20,7 +20,7 @@ me = 1.0
 qe = -1.0
 eps0 = 1.0
 
-dt = 0.2
+dt = 2e-3
 tmax = 30.0
 
 L_x = 2 * np.pi / k
@@ -46,7 +46,7 @@ Ex = (qe * n0 * A / (eps0 * k)) * np.sin(k * x)
 # Optional: Vlasov truth for warm-start history (n,u,p only)
 # ============================================================
 USE_VLASOV_HISTORY = True
-VLA_PATH = "../vlasov_single_data/A=0.1_k=0.35/moments.npz"
+VLA_PATH = "../vlasov_single_data/A=0.1_k=0.35/moments_2e-3.npz"
 
 vlasov_frames = None  # (Nt, N, 3)
 vlasov_t = None
@@ -73,44 +73,52 @@ if USE_VLASOV_HISTORY:
         print(f"[warn] Vlasov data not found: {VLA_PATH}")
 
 # ============================================================
-# Load trained window model (L=32, inchannel=3)
+# Load trained window model (match ClosureModel in encoder.py)
 # ============================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-CKPT_PATH = "../temporal_encoder/simpleencode_closure_neuralop_fno_dt0.2.pth"  # <- ここはあなたのckptに合わせて
+CKPT_PATH = "../temporal_encoder/attention_encode_closure_neuralop_fno_dt2e-3.pth"  # <- ここはあなたのckptに合わせて
 ckpt = torch.load(CKPT_PATH, map_location=device, weights_only=False)
 
 # ---- instantiate the same model arch used in training ----
-# ここはあなたの ClosureModel の __init__ と一致させてください
-# 例：ClosureModel(C_in=3, L=32, ...) など
-# 学習コードで arch を保存しているならそれを使うのが安全です
 arch = ckpt.get("arch", {})
+L = int(ckpt.get("L", 64))
 
-# できるだけ arch から復元（無ければデフォルトを仮定）
-# ※あなたの ClosureModel の引数名に合わせて必要なら修正
+# stats: input (C,), output scalar
+stats = ckpt["stats"]
+mu = np.array(stats["mu"], dtype=np.float32)    # (C_in,)
+sig = np.array(stats["sig"], dtype=np.float32)  # (C_in,)
+y_mu = float(stats["y_mu"])
+y_sig = float(stats["y_sig"])
+
+C_in = int(len(mu))
+
 model = ClosureModel(
-    C_in=3,
-    L=int(ckpt.get("L", 64)),
+    C_in=C_in,
+    L=L,
     d_m=int(arch.get("d_m", 16)),
+    temporal_encoder=str(arch.get("temporal_encoder", "attn")),
     t_hidden=int(arch.get("t_hidden", 64)),
     t_layers=int(arch.get("t_layers", 2)),
     t_kernel=int(arch.get("t_kernel", 5)),
+    attn_heads=int(arch.get("attn_heads", 4)),
+    attn_dropout=float(arch.get("attn_dropout", 0.1)),
+    use_decoder=bool(arch.get("use_decoder", True)),
+    dec_hidden=int(arch.get("dec_hidden", 128)),
+    dec_layers=int(arch.get("dec_layers", 2)),
     fno_modes=int(arch.get("fno_modes", 16)),
     fno_hidden=int(arch.get("fno_hidden", 64)),
     fno_layers=int(arch.get("fno_layers", 4)),
+    out_channels=1,
 ).to(device)
 
-model.load_state_dict(ckpt["model"], strict=False)
+try:
+    model.load_state_dict(ckpt["model"], strict=True)
+except RuntimeError as e:
+    print("[warn] strict load failed; retrying with strict=False")
+    print(f"[warn] {e}")
+    model.load_state_dict(ckpt["model"], strict=False)
 model.eval()
-
-stats = ckpt["stats"]
-L = int(ckpt.get("L", 64))  # ✅ L=32
-
-# stats: input (C,), output scalar
-mu = np.array(stats["mu"], dtype=np.float32)    # (3,)
-sig = np.array(stats["sig"], dtype=np.float32)  # (3,)
-y_mu = float(stats["y_mu"])
-y_sig = float(stats["y_sig"])
 
 def normalize_X_seq(X_seq_raw):
     # X_seq_raw: (L,N,3) -> normalized
@@ -320,7 +328,7 @@ outdir = f"../fluid_simulation_results/windowAE_closure_A={A}_k={k}/"
 os.makedirs(outdir, exist_ok=True)
 
 np.savez(
-    f"{outdir}/moments_dt0.2.npz",
+    f"{outdir}/moments_dt2e-3.npz",
     t=t_history,
     x=x,
     n=n_history,
@@ -330,7 +338,7 @@ np.savez(
     Energy=Energy_history,
 )
 
-print("saved:", f"{outdir}/moments.npz")
+print("saved:", f"{outdir}/moments_dt2e-3.npz")
 
 #energyのプロット
 plt.figure()

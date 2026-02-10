@@ -158,7 +158,7 @@ class TemporalEncoderAttention(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers)
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers, enable_nested_tensor=False)
         self.pool = nn.Parameter(torch.randn(1, d_m))
         self.dropout = nn.Dropout(dropout)
 
@@ -454,12 +454,12 @@ def train(
 
 if __name__ == "__main__":
     train(
-        npz_train="../vlasov_single_data/A=0.1_k=0.35/moments_dt0.2.npz",
-        npz_valid="../vlasov_single_data/A=0.1_k=0.35/moments_dt0.2.npz",
+        npz_train="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
+        npz_valid="../vlasov_single_data/A=0.1_k=0.35/moments_dt2e-3.npz",
         L=64,
         batch_size=16,
-        lr=2e-3,
-        epochs=35,
+        lr=1e-3,
+        epochs=20,
         fno_modes=16,
         fno_hidden=64,
         fno_layers=4,
